@@ -135,11 +135,98 @@ async function cleanupOldSignals() {
 // Main Scraper Function
 // --------------------------------------------------------------------------
 
-// export async function runBotScan() {
-//    console.log("TEMPORARILY DISABLED FOR DEBUGGING");
-//    return { success: true, processed: 0, top: [] };
-// }
+// Main Scraper Function
 export async function runBotScan() {
-    // console.log("Starting Scan...");
-    return { success: true, processed: 0, top: [] }; // Mock return
+    console.log("Starting Scan...");
+
+    // 1. Fetch Data
+    const [boostedAddrs, searchPairs, geckoPairs] = await Promise.all([
+        fetchBoostedTokens(),
+        fetchSearchGainers(),
+        fetchGeckoTrending()
+    ]);
+
+    const boostedPairs = await fetchTokenPairs(boostedAddrs);
+
+    // 2. Merge
+    const allPairs = [...boostedPairs, ...searchPairs, ...geckoPairs];
+    const uniquePairs = new Map<string, any>();
+
+    for (const pair of allPairs) {
+        const baseAddr = pair.baseToken?.address;
+        if (!baseAddr) continue;
+        if (!uniquePairs.has(baseAddr)) {
+            uniquePairs.set(baseAddr, pair);
+        }
+    }
+
+    // 3. Filter & Sort
+    const candidates = Array.from(uniquePairs.values())
+        .map(pair => {
+            const liq = parseFloat(pair.liquidity?.usd || 0);
+            const vol = parseFloat(pair.volume?.h24 || 0);
+            const change = parseFloat(pair.priceChange?.h24 || 0);
+            return { pair, liq, vol, change };
+        })
+        .filter(p =>
+            p.liq >= MIN_LIQUIDITY_USD &&
+            p.vol >= MIN_VOLUME_24H &&
+            !isNaN(p.change)
+        )
+        .sort((a, b) => b.change - a.change)
+        .slice(0, TOP_N);
+
+    if (candidates.length === 0) {
+        await cleanupOldSignals();
+        return { success: true, message: "No gainers found", count: 0 };
+    }
+
+    // 4. Process
+    const results = [];
+    for (const { pair, change, vol, liq } of candidates) {
+        const base = pair.baseToken;
+        const name = base.name || "Unknown";
+        const symbol = base.symbol || "???";
+
+        // AI Summary
+        let summary = "";
+        try {
+            const completion = await openai.chat.completions.create({
+                model: "gpt-4o-mini",
+                messages: [
+                    { role: "system", content: "You are a concise crypto analyst. Describe the token and momentum in ONE sentence." },
+                    { role: "user", content: `Token: ${name} (${symbol})\nChange: ${change.toFixed(1)}%\nVol: $${vol}` }
+                ],
+                max_tokens: 120
+            });
+            summary = completion.choices[0]?.message?.content || "";
+        } catch (e) {
+            console.error(`AI Error for ${name}:`, e);
+        }
+
+        const swapLink = `https://matcha.xyz/trade?chain=base&sellToken=ETH&buyToken=${base.address}&swapFeeRecipient=${REFERRAL_WALLET}&swapFeeBps=${SWAP_FEE_BPS}`;
+
+        const signal = {
+            token_address: base.address,
+            pair_address: pair.pairAddress,
+            liquidity_eth: liq,
+            initial_price: parseFloat(pair.priceUsd || 0),
+            swap_link: swapLink,
+            token_name: `${name} (${symbol})`,
+            token_summary: summary,
+            price_change_pct: change,
+            volume_24h: vol,
+            market_cap: parseFloat(pair.marketCap || pair.fdv || 0),
+            dex_url: pair.url,
+            updated_at: new Date().toISOString(),
+        };
+
+        const { error } = await supabase.from("signals").upsert(signal, { onConflict: "token_address" });
+        if (error) console.error("Upsert Error:", error);
+
+        results.push({ name, change });
+    }
+
+    await cleanupOldSignals();
+    return { success: true, processed: results.length, top: results };
 }
