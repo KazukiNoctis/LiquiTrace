@@ -1,0 +1,18 @@
+{
+    "accountAssociation": {
+        "header": "eyJmaWQiOiA...",
+        "payload": "eyJkb21haW4iOiA...",
+        "signature": "MHhjZ..."
+    },
+    "frame": {
+        "version": "1",
+        "name": "LiquiTrace",
+        "iconUrl": "https://your-project.vercel.app/logo.png",
+        "homeUrl": "https://your-project.vercel.app",
+        "imageUrl": "https://your-project.vercel.app/og.png",
+        "buttonTitle": "Launch",
+        "splashImageUrl": "https://your-project.vercel.app/logo.png",
+        "splashBackgroundColor": "#7c3aed",
+        "webhookUrl": "https://your-project.vercel.app/api/webhook"
+    }
+}
