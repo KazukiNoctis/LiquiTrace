@@ -1,0 +1,37 @@
+{
+  "name": "liquitrace",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "trigger:dev": "trigger.dev dev",
+    "trigger:deploy": "trigger.dev deploy"
+  },
+  "dependencies": {
+    "@farcaster/miniapp-sdk": "^0.2.3",
+    "@farcaster/miniapp-wagmi-connector": "^1.1.1",
+    "@supabase/supabase-js": "^2.96.0",
+    "@tanstack/react-query": "^5.90.21",
+    "@trigger.dev/sdk": "^3.0.0-beta.50",
+    "next": "16.1.6",
+    "openai": "^6.22.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "viem": "^2.45.3",
+    "wagmi": "^3.4.3"
+  },
+  "devDependencies": {
+    "@trigger.dev/build": "latest",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.1.6",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}
