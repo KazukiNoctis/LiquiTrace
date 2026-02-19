@@ -23,6 +23,7 @@
             "signals"
         ],
         "subtitle": "Real-time Base token signals",
-        "description": "Track top gainers on Base chain in real-time. Get instant alerts for high liquidity pumps and trade directly via 0x."
+        "description": "Track top gainers on Base chain in real-time. Get instant alerts for high liquidity pumps and trade directly via 0x.",
+        "noindex": true
     }
 }
