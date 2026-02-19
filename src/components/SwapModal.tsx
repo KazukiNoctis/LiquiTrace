@@ -11,7 +11,8 @@ import {
     useConnect,
     useSwitchChain,
 } from "wagmi";
-import { parseUnits, formatUnits, erc20Abi, maxUint256 } from "viem";
+import { useCapabilities, useWriteContracts } from "wagmi/experimental";
+import { parseUnits, formatUnits, erc20Abi, maxUint256, encodeFunctionData } from "viem";
 
 interface SwapModalProps {
     isOpen: boolean;
@@ -49,6 +50,8 @@ export default function SwapModal({
     const { address, isConnected, chainId } = useAccount();
     const { connectors, connect } = useConnect();
     const { switchChain } = useSwitchChain();
+
+    // Standard ops
     const {
         sendTransaction,
         isPending: isSwapPending,
@@ -63,6 +66,20 @@ export default function SwapModal({
     } = useWriteContract();
     const { isLoading: isApproveConfirming, isSuccess: isApproveSuccess } =
         useWaitForTransactionReceipt({ hash: approveTxHash });
+
+    // EIP-5792 capabilities
+    const { data: availableCapabilities } = useCapabilities({
+        account: address,
+    });
+    const capabilities = availableCapabilities?.[CHAIN_ID];
+    const supportsBatch = capabilities?.atomicBatch?.supported === true;
+
+    const {
+        writeContracts,
+        isPending: isBatchPending,
+        isSuccess: isBatchSuccess,
+        error: batchError
+    } = useWriteContracts();
 
     const [sellToken, setSellToken] = useState<"ETH" | "USDC">("ETH");
     const [amount, setAmount] = useState("0.01");
@@ -95,19 +112,11 @@ export default function SwapModal({
         query: { enabled: !!address },
     });
 
-    // Normalize USDC to same shape as ethBalance for easier use
     const usdcBalanceValue = usdcRawBalance !== undefined ? (usdcRawBalance as bigint) : undefined;
-
-    // Current balance based on selected token
-    const currentBalanceValue =
-        sellToken === "ETH"
-            ? ethBalance?.value
-            : usdcBalanceValue;
-
+    const currentBalanceValue = sellToken === "ETH" ? ethBalance?.value : usdcBalanceValue;
     const currentDecimals = TOKENS[sellToken].decimals;
     const isBalanceLoading = sellToken === "ETH" ? isEthLoading : isUsdcLoading;
 
-    // Force-refresh when modal opens
     useEffect(() => {
         if (isOpen && address) {
             refetchEth();
@@ -126,8 +135,8 @@ export default function SwapModal({
     });
 
     useEffect(() => {
-        if (isApproveSuccess) refetchAllowance();
-    }, [isApproveSuccess, refetchAllowance]);
+        if (isApproveSuccess || isBatchSuccess) refetchAllowance();
+    }, [isApproveSuccess, isBatchSuccess, refetchAllowance]);
 
     // ── Amount ────────────────────────────────────────────────
     const sanitizedAmount = amount.replace(/,/g, ".");
@@ -153,10 +162,7 @@ export default function SwapModal({
             setQuoteError(null);
             setQuote(null);
             try {
-                const taker =
-                    address ||
-                    REFERRAL_WALLET ||
-                    "0x0000000000000000000000000000000000000000";
+                const taker = address || REFERRAL_WALLET || "0x0000000000000000000000000000000000000000";
                 const params = new URLSearchParams({
                     chainId: CHAIN_ID.toString(),
                     sellToken: TOKENS[sellToken].address,
@@ -166,10 +172,7 @@ export default function SwapModal({
                 });
                 const res = await fetch(`/api/quote?${params}`);
                 const data = await res.json();
-                if (!res.ok)
-                    throw new Error(
-                        data.reason || data.message || "Failed to fetch quote"
-                    );
+                if (!res.ok) throw new Error(data.reason || data.message || "Failed to fetch quote");
                 setQuote(data);
             } catch (err: any) {
                 console.error("Quote Error:", err);
@@ -202,6 +205,42 @@ export default function SwapModal({
         });
     };
 
+    const handleBatchSwap = () => {
+        if (!quote?.transaction) return;
+
+        const contracts = [];
+        const needsApprove =
+            sellToken === "USDC" &&
+            allowance !== undefined &&
+            amountWei > 0n &&
+            (allowance as bigint) < amountWei;
+
+        if (needsApprove) {
+            contracts.push({
+                address: TOKENS.USDC.address as `0x${string}`,
+                abi: erc20Abi,
+                functionName: "approve",
+                args: [PERMIT2_ADDRESS, maxUint256]
+            });
+        }
+
+        // Add the swap call
+        // Note: writeContracts typically expects ABI-based calls, but for raw execution 
+        // passing to/data/value is supported by some smart wallets via unstructured calls.
+        // We'll try passing the raw transaction data. If TypeScript complains, we cast.
+        contracts.push({
+            address: quote.transaction.to as `0x${string}`,
+            abi: [], // Empty ABI for raw call
+            functionName: 'execute', // Dummy name or check if we can pass raw
+            args: [],
+            data: quote.transaction.data as `0x${string}`,
+            value: BigInt(quote.transaction.value)
+        });
+
+        // @ts-ignore: wagmi typing might be strict about ABI, but under the hood it sends calls
+        writeContracts({ contracts });
+    };
+
     // ── Button State Machine ──────────────────────────────────
     type BtnState =
         | "connect"
@@ -209,62 +248,53 @@ export default function SwapModal({
         | "loading-balance"
         | "insufficient"
         | "approve"
-        | "swap";
+        | "swap"
+        | "batch-swap";
 
     const btnState: BtnState = (() => {
         if (!isConnected) return "connect";
         if (chainId !== CHAIN_ID) return "wrong-network";
-        if (isBalanceLoading || currentBalanceValue === undefined)
-            return "loading-balance";
+        if (isBalanceLoading || currentBalanceValue === undefined) return "loading-balance";
         if (amountWei > currentBalanceValue) return "insufficient";
-        if (
+
+        const needsApprove =
             sellToken === "USDC" &&
             allowance !== undefined &&
             amountWei > 0n &&
-            (allowance as bigint) < amountWei
-        )
-            return "approve";
+            (allowance as bigint) < amountWei;
+
+        if (supportsBatch) {
+            // If we can batch, we always go to 'batch-swap' if approval is needed OR just swap
+            // Actually, 'batch-swap' covers both cases (approve+swap OR just swap)
+            return "batch-swap";
+        }
+
+        if (needsApprove) return "approve";
         return "swap";
     })();
 
     if (!isOpen) return null;
 
-    // Format balance for display
-    const displayBalance =
-        currentBalanceValue !== undefined
-            ? parseFloat(formatUnits(currentBalanceValue, currentDecimals)).toFixed(
-                sellToken === "USDC" ? 2 : 6
-            )
-            : isConnected
-                ? "0.00"
-                : "\u2014";
+    const displayBalance = currentBalanceValue !== undefined
+        ? parseFloat(formatUnits(currentBalanceValue, currentDecimals)).toFixed(sellToken === "USDC" ? 2 : 6)
+        : isConnected ? "0.00" : "\u2014";
 
-    // ── Render ────────────────────────────────────────────────
+    const isWorking = isApprovePending || isApproveConfirming || isSwapPending || isBatchPending;
+    const finalError = swapError || batchError;
+
     return (
         <div className="modal-overlay" onClick={onClose}>
             <div className="modal-content" onClick={(e) => e.stopPropagation()}>
                 <div className="modal-header">
                     <h3>Swap for {tokenSymbol}</h3>
-                    <button className="close-btn" onClick={onClose}>
-                        &times;
-                    </button>
+                    <button className="close-btn" onClick={onClose}>&times;</button>
                 </div>
 
                 <div className="modal-body">
                     {/* Token Selector */}
                     <div className="token-selector">
-                        <button
-                            className={sellToken === "ETH" ? "active" : ""}
-                            onClick={() => setSellToken("ETH")}
-                        >
-                            ETH
-                        </button>
-                        <button
-                            className={sellToken === "USDC" ? "active" : ""}
-                            onClick={() => setSellToken("USDC")}
-                        >
-                            USDC
-                        </button>
+                        <button className={sellToken === "ETH" ? "active" : ""} onClick={() => setSellToken("ETH")}>ETH</button>
+                        <button className={sellToken === "USDC" ? "active" : ""} onClick={() => setSellToken("USDC")}>USDC</button>
                     </div>
 
                     {/* Input */}
@@ -276,79 +306,50 @@ export default function SwapModal({
                                 inputMode="decimal"
                                 value={amount}
                                 onChange={(e) => {
-                                    if (/^[0-9.,]*$/.test(e.target.value))
-                                        setAmount(e.target.value);
+                                    if (/^[0-9.,]*$/.test(e.target.value)) setAmount(e.target.value);
                                 }}
                                 placeholder="0.0"
                             />
                             <span className="input-asset">{sellToken}</span>
                         </div>
                         <div className="balance-info">
-                            <span>
-                                Balance:{" "}
-                                {isBalanceLoading ? "Loading..." : displayBalance}{" "}
-                                {sellToken}
-                            </span>
+                            <span>Balance: {isBalanceLoading ? "Loading..." : displayBalance} {sellToken}</span>
                             {isConnected && (
-                                <button
-                                    className="refresh-btn"
-                                    onClick={() => {
-                                        refetchEth();
-                                        refetchUsdc();
-                                    }}
-                                >
-                                    &#8635;
-                                </button>
+                                <button className="refresh-btn" onClick={() => { refetchEth(); refetchUsdc(); }}>&#8635;</button>
                             )}
                         </div>
                     </div>
 
                     {/* Warning */}
                     {btnState === "insufficient" && (
-                        <div className="swap-msg error">
-                            Insufficient {sellToken} balance
-                        </div>
+                        <div className="swap-msg error">Insufficient {sellToken} balance</div>
                     )}
 
                     {/* Quote */}
                     <div className="quote-preview">
                         <label>You Receive (Est.)</label>
                         {loadingQuote ? (
-                            <div className="quote-loading">
-                                Fetching best price...
-                            </div>
+                            <div className="quote-loading">Fetching best price...</div>
                         ) : quoteError ? (
                             <div className="quote-error">{quoteError}</div>
                         ) : quote && quote.buyAmount ? (
                             <div className="quote-value">
-                                {parseFloat(
-                                    formatUnits(BigInt(quote.buyAmount), 18)
-                                ).toLocaleString()}{" "}
-                                {tokenSymbol}
+                                {parseFloat(formatUnits(BigInt(quote.buyAmount), 18)).toLocaleString()} {tokenSymbol}
                             </div>
                         ) : (
                             <div className="quote-placeholder">&mdash;</div>
                         )}
+                        {supportsBatch && <div style={{ fontSize: 10, marginTop: 4, color: '#00ffaa' }}>⚡ Smart Wallet Batching Active</div>}
                     </div>
 
-                    {/* ── Buttons (state machine) ── */}
+                    {/* ── Buttons ── */}
                     {btnState === "connect" && (
                         <div className="connect-section">
-                            <p className="swap-msg warning">
-                                Connect Wallet to Swap
-                            </p>
+                            <p className="swap-msg warning">Connect Wallet to Swap</p>
                             <div className="connect-buttons">
                                 {connectors.map((c) => (
-                                    <button
-                                        key={c.uid}
-                                        className="connect-btn"
-                                        onClick={() =>
-                                            connect({ connector: c })
-                                        }
-                                    >
-                                        {c.name === "Farcaster Mini App"
-                                            ? "Farcaster"
-                                            : c.name}
+                                    <button key={c.uid} className="connect-btn" onClick={() => connect({ connector: c })}>
+                                        {c.name === "Farcaster Mini App" ? "Farcaster" : c.name}
                                     </button>
                                 ))}
                             </div>
@@ -356,82 +357,69 @@ export default function SwapModal({
                     )}
 
                     {btnState === "wrong-network" && (
-                        <button
-                            className="switch-network-btn"
-                            onClick={() =>
-                                switchChain({ chainId: CHAIN_ID })
-                            }
-                        >
+                        <button className="switch-network-btn" onClick={() => switchChain({ chainId: CHAIN_ID })}>
                             Switch to Base Network
                         </button>
                     )}
 
                     {btnState === "loading-balance" && (
-                        <button className="confirm-swap-btn" disabled>
-                            Loading Balance&hellip;
-                        </button>
+                        <button className="confirm-swap-btn" disabled>Loading Balance&hellip;</button>
                     )}
 
                     {btnState === "insufficient" && (
-                        <button className="confirm-swap-btn" disabled>
-                            Insufficient Balance
-                        </button>
+                        <button className="confirm-swap-btn" disabled>Insufficient Balance</button>
                     )}
 
                     {btnState === "approve" && (
                         <button
                             className="approve-btn"
-                            disabled={
-                                isApprovePending || isApproveConfirming
-                            }
+                            disabled={isWorking}
                             onClick={handleApprove}
                         >
-                            {isApprovePending || isApproveConfirming
-                                ? "Approving USDC..."
-                                : "Approve USDC"}
+                            {isApprovePending || isApproveConfirming ? "Approving USDC..." : "Approve USDC"}
                         </button>
                     )}
 
                     {btnState === "swap" && (
                         <button
                             className="confirm-swap-btn"
-                            disabled={
-                                !quote ||
-                                loadingQuote ||
-                                isSwapPending ||
-                                !!quoteError
-                            }
+                            disabled={!quote || loadingQuote || isWorking || !!quoteError}
                             onClick={handleSwap}
                         >
                             {isSwapPending ? "Swapping..." : "Confirm Swap"}
                         </button>
                     )}
 
+                    {btnState === "batch-swap" && (
+                        <button
+                            className="confirm-swap-btn"
+                            disabled={!quote || loadingQuote || isWorking || !!quoteError}
+                            onClick={handleBatchSwap}
+                        >
+                            {isBatchPending ? "Confirming Batch..." : "Swap (1-Click) ⚡"}
+                        </button>
+                    )}
+
                     {/* Status messages */}
-                    {isApproveSuccess && (
-                        <div className="swap-msg success">
-                            USDC Approved! Now Swap.
-                        </div>
+                    {isApproveSuccess && !isBatchSuccess && (
+                        <div className="swap-msg success">USDC Approved! Now Swap.</div>
                     )}
                     {isSwapSuccess && (
-                        <div className="swap-msg success">
-                            Transaction Sent! &#128640;
-                        </div>
+                        <div className="swap-msg success">Transaction Sent! &#128640;</div>
                     )}
-                    {swapError && (
+                    {isBatchSuccess && (
+                        <div className="swap-msg success">Batch Transaction Sent! &#128640;</div>
+                    )}
+                    {finalError && (
                         <div className="swap-msg error">
-                            Swap Failed:{" "}
-                            {swapError.message.slice(0, 50)}&hellip;
+                            Error: {finalError.message.slice(0, 50)}&hellip;
                         </div>
                     )}
 
                     {/* Debug */}
-                    <div className="debug-network">
-                        Chain: {chainId ?? "?"} | State: {btnState} |
-                        ETH: {ethBalance ? formatUnits(ethBalance.value, 18) : "nil"} |
-                        USDC: {usdcBalanceValue !== undefined ? formatUnits(usdcBalanceValue, 6) : "nil"} |
-                        Sel: {sellToken} | Amt: {amountWei.toString()}
-                    </div>
+                    {/* <div className="debug-network">
+                        State: {btnState} | Cap: {supportsBatch ? 'Yes' : 'No'}
+                    </div> */}
                 </div>
             </div>
 

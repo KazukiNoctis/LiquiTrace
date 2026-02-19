@@ -3,9 +3,14 @@ export const dynamic = "force-dynamic";
 import LiveFeed from "@/components/LiveFeed";
 import TipDegenButton from "@/components/TipDegenButton";
 
+import UserProfile from "@/components/UserProfile";
+import OnboardingModal from "@/components/OnboardingModal";
+
 export default function Home() {
   return (
     <div className="dashboard">
+      <OnboardingModal />
+
       {/* Fixed top bar */}
       <div className="top-bar">
         <header className="dashboard-header">
@@ -13,7 +18,7 @@ export default function Home() {
             <img src="/logo.png?v=3" alt="LiquiTrace" className="logo-icon" />
             <span className="logo-text">LiquiTrace</span>
           </div>
-          <div className="header-badge">Live on Base</div>
+          <UserProfile />
         </header>
 
         <div className="section-title">Signal Feed</div>
