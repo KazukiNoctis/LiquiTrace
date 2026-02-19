@@ -10,8 +10,10 @@ import {
     useWaitForTransactionReceipt,
     useConnect,
     useSwitchChain,
+    useCapabilities,
+    useSendCalls,
 } from "wagmi";
-import { useCapabilities, useWriteContracts } from "wagmi/experimental";
+// import { useCapabilities, useWriteContracts } from "wagmi/experimental";
 import { parseUnits, formatUnits, erc20Abi, maxUint256, encodeFunctionData } from "viem";
 
 interface SwapModalProps {
@@ -75,11 +77,11 @@ export default function SwapModal({
     const supportsBatch = capabilities?.atomicBatch?.supported === true;
 
     const {
-        writeContracts,
+        sendCalls,
         isPending: isBatchPending,
         isSuccess: isBatchSuccess,
         error: batchError
-    } = useWriteContracts();
+    } = useSendCalls();
 
     const [sellToken, setSellToken] = useState<"ETH" | "USDC">("ETH");
     const [amount, setAmount] = useState("0.01");
@@ -208,7 +210,7 @@ export default function SwapModal({
     const handleBatchSwap = () => {
         if (!quote?.transaction) return;
 
-        const contracts = [];
+        const calls = [];
         const needsApprove =
             sellToken === "USDC" &&
             allowance !== undefined &&
@@ -216,29 +218,27 @@ export default function SwapModal({
             (allowance as bigint) < amountWei;
 
         if (needsApprove) {
-            contracts.push({
-                address: TOKENS.USDC.address as `0x${string}`,
+            const approveData = encodeFunctionData({
                 abi: erc20Abi,
                 functionName: "approve",
                 args: [PERMIT2_ADDRESS, maxUint256]
             });
+
+            calls.push({
+                to: TOKENS.USDC.address as `0x${string}`,
+                data: approveData,
+                value: 0n
+            });
         }
 
         // Add the swap call
-        // Note: writeContracts typically expects ABI-based calls, but for raw execution 
-        // passing to/data/value is supported by some smart wallets via unstructured calls.
-        // We'll try passing the raw transaction data. If TypeScript complains, we cast.
-        contracts.push({
-            address: quote.transaction.to as `0x${string}`,
-            abi: [], // Empty ABI for raw call
-            functionName: 'execute', // Dummy name or check if we can pass raw
-            args: [],
+        calls.push({
+            to: quote.transaction.to as `0x${string}`,
             data: quote.transaction.data as `0x${string}`,
             value: BigInt(quote.transaction.value)
         });
 
-        // @ts-ignore: wagmi typing might be strict about ABI, but under the hood it sends calls
-        writeContracts({ contracts });
+        sendCalls({ calls });
     };
 
     // ── Button State Machine ──────────────────────────────────
