@@ -12,6 +12,7 @@
         "imageUrl": "https://liquitrace.vercel.app/og.png",
         "buttonTitle": "Launch",
         "splashImageUrl": "https://liquitrace.vercel.app/logo.png",
+        "heroImageUrl": "https://liquitrace.vercel.app/hero.png",
         "splashBackgroundColor": "#7c3aed",
         "webhookUrl": "https://liquitrace.vercel.app/api/webhook",
         "primaryCategory": "finance",

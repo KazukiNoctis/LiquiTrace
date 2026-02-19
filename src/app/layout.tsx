@@ -9,11 +9,16 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "LiquiTrace – Base Signal Dashboard",
+  title: "LiquiTrace – Discovery & Swap",
   description:
-    "Real-time token signal feed from Aerodrome on Base. Swap via 0x and tip with $DEGEN.",
+    "Real-time token signal feed on Base. Swap via 0x and tip with $DEGEN.",
   icons: {
     icon: "/logo.png",
+  },
+  openGraph: {
+    title: "LiquiTrace – Discovery & Swap",
+    description: "Real-time token signal feed from Aerodrome on Base. Swap via 0x and tip with $DEGEN.",
+    images: ["/og.png"],
   },
   other: {
     "base:app_id": "6995948525337829d86a5416",
