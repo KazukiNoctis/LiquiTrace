@@ -24,10 +24,10 @@
             "signals"
         ],
         "subtitle": "Real-time Base token signals",
-        "description": "Track top gainers on Base chain in real-time. Get instant alerts for high liquidity pumps and trade directly via 0x.",
+        "description": "Track real-time Base top gainers. Instant pump alerts & 1-click swaps.",
         "tagline": "Real-time Base token signals",
         "ogTitle": "LiquiTrace",
-        "ogDescription": "Track top gainers on Base chain in real-time. Get instant alerts for high liquidity pumps and trade directly via 0x.",
+        "ogDescription": "Track real-time Base top gainers. Instant pump alerts & 1-click swaps.",
         "ogImageUrl": "https://liquitrace.vercel.app/og.png",
         "screenshotUrls": [
             "https://liquitrace.vercel.app/screenshot1.png",
