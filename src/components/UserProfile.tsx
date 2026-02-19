@@ -16,7 +16,7 @@ export default function UserProfile() {
         setMounted(true);
     }, []);
 
-    if (!mounted) return null;
+
 
     useEffect(() => {
         const loadContext = async () => {
@@ -31,6 +31,8 @@ export default function UserProfile() {
         };
         loadContext();
     }, []);
+
+    if (!mounted) return null;
 
     const handleConnect = () => {
         const connector = connectors[0];
@@ -65,7 +67,7 @@ export default function UserProfile() {
 
 
 
-    if (!mounted) return null;
+
 
     return (
         <div className="relative">
