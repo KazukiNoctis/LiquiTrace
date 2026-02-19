@@ -17,6 +17,20 @@ export const metadata: Metadata = {
   },
   other: {
     "base:app_id": "6995948525337829d86a5416",
+    "fc:frame": JSON.stringify({
+      version: "next",
+      imageUrl: "https://liquitrace.vercel.app/og.png",
+      button: {
+        title: "Launch LiquiTrace",
+        action: {
+          type: "launch_frame",
+          name: "LiquiTrace",
+          url: "https://liquitrace.vercel.app",
+          splashImageUrl: "https://liquitrace.vercel.app/logo.png",
+          splashBackgroundColor: "#7c3aed",
+        },
+      },
+    }),
   },
 };
 

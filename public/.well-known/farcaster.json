@@ -13,17 +13,6 @@
         "buttonTitle": "Launch",
         "splashImageUrl": "https://liquitrace.vercel.app/logo.png",
         "splashBackgroundColor": "#7c3aed",
-        "webhookUrl": "https://liquitrace.vercel.app/api/webhook",
-        "primaryCategory": "finance",
-        "tags": [
-            "crypto",
-            "base",
-            "trading",
-            "alerts",
-            "signals"
-        ],
-        "subtitle": "Real-time Base token signals",
-        "description": "Track top gainers on Base chain in real-time. Get instant alerts for high liquidity pumps and trade directly via 0x.",
-        "noindex": true
+        "webhookUrl": "https://liquitrace.vercel.app/api/webhook"
     }
 }
