@@ -132,6 +132,94 @@ async function cleanupOldSignals() {
 }
 
 // --------------------------------------------------------------------------
+// Notification Sender
+// --------------------------------------------------------------------------
+
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://liquitrace.vercel.app";
+
+interface SignalSummary {
+    name: string;
+    change: number;
+}
+
+async function sendSignalNotifications(newSignals: SignalSummary[]) {
+    if (newSignals.length === 0) return;
+
+    try {
+        // Fetch all subscribers
+        const { data: subscribers, error } = await supabase
+            .from("notification_subscribers")
+            .select("token, notification_url");
+
+        if (error || !subscribers || subscribers.length === 0) {
+            if (error) console.error("[Notify] Fetch subs error:", error);
+            return;
+        }
+
+        // Build notification content
+        const topSignal = newSignals[0];
+        const title = `🚀 ${topSignal.name} +${topSignal.change.toFixed(0)}%`;
+        const body = newSignals.length > 1
+            ? `and ${newSignals.length - 1} more signal${newSignals.length > 2 ? "s" : ""} detected on Base`
+            : `New top gainer detected on Base`;
+        const notificationId = `signal-${Date.now()}`;
+
+        // Group tokens by notification_url
+        const urlGroups = new Map<string, string[]>();
+        for (const sub of subscribers) {
+            const tokens = urlGroups.get(sub.notification_url) || [];
+            tokens.push(sub.token);
+            urlGroups.set(sub.notification_url, tokens);
+        }
+
+        // Send notifications (batch up to 100 tokens per request)
+        for (const [url, tokens] of urlGroups) {
+            for (let i = 0; i < tokens.length; i += 100) {
+                const batch = tokens.slice(i, i + 100);
+
+                try {
+                    const res = await fetch(url, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            notificationId,
+                            title,
+                            body,
+                            targetUrl: APP_URL,
+                            tokens: batch,
+                        }),
+                    });
+
+                    if (res.ok) {
+                        const result = await res.json();
+
+                        // Clean up invalid tokens
+                        const invalidTokens: string[] = result.invalidTokens || [];
+                        if (invalidTokens.length > 0) {
+                            await supabase
+                                .from("notification_subscribers")
+                                .delete()
+                                .in("token", invalidTokens);
+                            console.log(`[Notify] Cleaned ${invalidTokens.length} invalid tokens`);
+                        }
+
+                        const successCount = result.successfulTokens?.length || 0;
+                        const rateLimited = result.rateLimitedTokens?.length || 0;
+                        console.log(`[Notify] Sent: ${successCount} ok, ${rateLimited} rate-limited, ${invalidTokens.length} invalid`);
+                    } else {
+                        console.error(`[Notify] API error: ${res.status} ${res.statusText}`);
+                    }
+                } catch (err) {
+                    console.error("[Notify] Send error:", err);
+                }
+            }
+        }
+    } catch (err) {
+        console.error("[Notify] Unexpected error:", err);
+    }
+}
+
+// --------------------------------------------------------------------------
 // Main Scraper Function
 // --------------------------------------------------------------------------
 
@@ -182,7 +270,9 @@ export async function runBotScan() {
     }
 
     // 4. Process
-    const results = [];
+    const results: SignalSummary[] = [];
+    const newSignals: SignalSummary[] = [];
+
     for (const { pair, change, vol, liq } of candidates) {
         const base = pair.baseToken;
         const name = base.name || "Unknown";
@@ -221,12 +311,30 @@ export async function runBotScan() {
             updated_at: new Date().toISOString(),
         };
 
-        const { error } = await supabase.from("signals").upsert(signal, { onConflict: "token_address" });
-        if (error) console.error("Upsert Error:", error);
+        const { error, data } = await supabase
+            .from("signals")
+            .upsert(signal, { onConflict: "token_address" })
+            .select("id");
 
-        results.push({ name, change });
+        if (error) {
+            console.error("Upsert Error:", error);
+        }
+
+        const signalInfo = { name: `${name} (${symbol})`, change };
+        results.push(signalInfo);
+
+        // Track new signals (upsert returned data means it was inserted/updated)
+        if (data && data.length > 0) {
+            newSignals.push(signalInfo);
+        }
+    }
+
+    // 5. Send notifications for new signals
+    if (newSignals.length > 0) {
+        await sendSignalNotifications(newSignals);
     }
 
     await cleanupOldSignals();
-    return { success: true, processed: results.length, top: results };
+    return { success: true, processed: results.length, top: results, notified: newSignals.length };
 }
+
