@@ -2,8 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { type Context } from "@farcaster/miniapp-sdk";
-import { useAccount, useConnect } from "wagmi";
+import { useAccount, useConnect, useBalance, useReadContract } from "wagmi";
 import { sdk } from "@farcaster/miniapp-sdk";
+import { formatUnits, erc20Abi } from "viem";
+
+const CHAIN_ID = 8453;
+const USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 
 export default function UserProfile() {
     const [farcasterUser, setFarcasterUser] = useState<Context.UserContext | null>(null);
@@ -11,12 +15,31 @@ export default function UserProfile() {
     const { connect, connectors } = useConnect();
     const [mounted, setMounted] = useState(false);
     const [showOptions, setShowOptions] = useState(false);
+    const [showAssets, setShowAssets] = useState(false);
+
+    // ETH balance
+    const { data: ethBalance, isLoading: isEthLoading, refetch: refetchEth } = useBalance({
+        address,
+        chainId: CHAIN_ID,
+        query: { enabled: !!address },
+    });
+
+    // USDC balance
+    const { data: usdcRaw, isLoading: isUsdcLoading, refetch: refetchUsdc } = useReadContract({
+        address: USDC_ADDRESS as `0x${string}`,
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [address as `0x${string}`],
+        chainId: CHAIN_ID,
+        query: { enabled: !!address },
+    });
+
+    const ethDisplay = ethBalance ? parseFloat(formatUnits(ethBalance.value, 18)).toFixed(6) : "0.000000";
+    const usdcDisplay = usdcRaw !== undefined ? parseFloat(formatUnits(usdcRaw as bigint, 6)).toFixed(2) : "0.00";
 
     useEffect(() => {
         setMounted(true);
     }, []);
-
-
 
     useEffect(() => {
         const loadContext = async () => {
@@ -32,6 +55,14 @@ export default function UserProfile() {
         loadContext();
     }, []);
 
+    // Close asset panel when clicking outside
+    useEffect(() => {
+        if (!showAssets) return;
+        const handleClick = () => setShowAssets(false);
+        const t = setTimeout(() => document.addEventListener("click", handleClick), 10);
+        return () => { clearTimeout(t); document.removeEventListener("click", handleClick); };
+    }, [showAssets]);
+
     if (!mounted) return null;
 
     const handleConnect = () => {
@@ -41,27 +72,70 @@ export default function UserProfile() {
         }
     };
 
-    if (farcasterUser) {
-        return (
-            <div className="user-profile">
-                <img
-                    src={farcasterUser.pfpUrl}
-                    alt={farcasterUser.username}
-                    className="user-avatar"
-                />
-                <span className="user-name">@{farcasterUser.username}</span>
+    const handleRefresh = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        refetchEth();
+        refetchUsdc();
+    };
+
+    const profilePill = (avatar: React.ReactNode, label: string) => (
+        <div className="profile-wrapper">
+            <div
+                className="user-profile"
+                onClick={(e) => { e.stopPropagation(); setShowAssets(!showAssets); }}
+                style={{ cursor: "pointer" }}
+            >
+                {avatar}
+                <span className="user-name">{label}</span>
+                <span className="asset-chevron">{showAssets ? "▲" : "▼"}</span>
             </div>
+
+            {showAssets && (
+                <div className="asset-panel" onClick={(e) => e.stopPropagation()}>
+                    <div className="asset-panel-header">
+                        <span>My Assets</span>
+                        <button className="asset-refresh" onClick={handleRefresh}>&#8635;</button>
+                    </div>
+                    <div className="asset-row">
+                        <div className="asset-icon">Ξ</div>
+                        <div className="asset-info">
+                            <span className="asset-symbol">ETH</span>
+                            <span className="asset-balance">{isEthLoading ? "..." : ethDisplay}</span>
+                        </div>
+                    </div>
+                    <div className="asset-row">
+                        <div className="asset-icon usdc">$</div>
+                        <div className="asset-info">
+                            <span className="asset-symbol">USDC</span>
+                            <span className="asset-balance">{isUsdcLoading ? "..." : usdcDisplay}</span>
+                        </div>
+                    </div>
+                    {address && (
+                        <a
+                            href={`https://basescan.org/address/${address}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="asset-basescan"
+                        >
+                            View on BaseScan ↗
+                        </a>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+
+    if (farcasterUser) {
+        return profilePill(
+            <img src={farcasterUser.pfpUrl} alt={farcasterUser.username} className="user-avatar" />,
+            `@${farcasterUser.username}`
         );
     }
 
     if (isConnected && address) {
-        return (
-            <div className="user-profile wallet-mode">
-                <div className="wallet-avatar-placeholder" />
-                <span className="user-name">
-                    {address.slice(0, 6)}…{address.slice(-4)}
-                </span>
-            </div>
+        return profilePill(
+            <div className="wallet-avatar-placeholder" />,
+            `${address.slice(0, 6)}…${address.slice(-4)}`
         );
     }
 

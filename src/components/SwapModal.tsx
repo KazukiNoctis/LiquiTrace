@@ -12,9 +12,10 @@ import {
     useSwitchChain,
     useCapabilities,
     useSendCalls,
+    useSignTypedData,
 } from "wagmi";
 // import { useCapabilities, useWriteContracts } from "wagmi/experimental";
-import { parseUnits, formatUnits, erc20Abi, maxUint256, encodeFunctionData } from "viem";
+import { parseUnits, formatUnits, erc20Abi, maxUint256, encodeFunctionData, concat, numberToHex, size } from "viem";
 
 interface SwapModalProps {
     isOpen: boolean;
@@ -56,10 +57,20 @@ export default function SwapModal({
     // Standard ops
     const {
         sendTransaction,
+        data: swapTxHash,
         isPending: isSwapPending,
-        isSuccess: isSwapSuccess,
+        isSuccess: isSwapSubmitted,
         error: swapError,
+        reset: resetSwap,
     } = useSendTransaction();
+
+    // Track on-chain confirmation for standard swap
+    const {
+        isLoading: isSwapConfirming,
+        isSuccess: isSwapConfirmed,
+        isError: isSwapFailed,
+        error: swapReceiptError,
+    } = useWaitForTransactionReceipt({ hash: swapTxHash });
 
     const {
         writeContract: approveToken,
@@ -83,11 +94,22 @@ export default function SwapModal({
         error: batchError
     } = useSendCalls();
 
+    const { signTypedDataAsync } = useSignTypedData();
+
     const [sellToken, setSellToken] = useState<"ETH" | "USDC">("ETH");
     const [amount, setAmount] = useState("0.01");
     const [quote, setQuote] = useState<any>(null);
     const [loadingQuote, setLoadingQuote] = useState(false);
     const [quoteError, setQuoteError] = useState<string | null>(null);
+    const [signError, setSignError] = useState<string | null>(null);
+    const [isSigning, setIsSigning] = useState(false);
+    const [swapSellInfo, setSwapSellInfo] = useState<{ amount: string; token: string } | null>(null);
+
+    // Determine if any swap has been confirmed on-chain
+    const swapConfirmedOnChain = isSwapConfirmed || isBatchSuccess;
+    const swapTxFailed = isSwapFailed;
+    const isConfirmingOnChain = isSwapConfirming;
+    const displayTxHash = swapTxHash;
 
     // ── ETH Balance (native) ──────────────────────────────────
     const {
@@ -125,6 +147,24 @@ export default function SwapModal({
             refetchUsdc();
         }
     }, [isOpen, address, refetchEth, refetchUsdc]);
+
+    // Auto-refresh balances after on-chain confirmation
+    useEffect(() => {
+        if (swapConfirmedOnChain) {
+            refetchEth();
+            refetchUsdc();
+        }
+    }, [swapConfirmedOnChain, refetchEth, refetchUsdc]);
+
+    // Reset swap state when modal opens fresh
+    useEffect(() => {
+        if (isOpen) {
+            setSignError(null);
+            setSwapSellInfo(null);
+            resetSwap();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isOpen]);
 
     // ── Allowance (USDC) ──────────────────────────────────────
     const { data: allowance, refetch: refetchAllowance } = useReadContract({
@@ -198,17 +238,63 @@ export default function SwapModal({
         });
     };
 
-    const handleSwap = () => {
+    const handleSwap = async () => {
         if (!quote?.transaction) return;
+        setSignError(null);
+        setSwapSellInfo({ amount: sanitizedAmount, token: sellToken });
+
+        let txData = quote.transaction.data as `0x${string}`;
+
+        // For ERC-20 sells (USDC), sign the Permit2 EIP-712 message and append signature
+        if (sellToken === "USDC" && quote.permit2?.eip712) {
+            try {
+                setIsSigning(true);
+                const signature = await signTypedDataAsync(quote.permit2.eip712);
+
+                // Append signature length (32-byte big-endian) + signature to tx data
+                const signatureLengthInHex = numberToHex(size(signature), { signed: false, size: 32 });
+                txData = concat([txData, signatureLengthInHex, signature]);
+            } catch (err: any) {
+                console.error("Permit2 signing failed:", err);
+                setSignError(err?.shortMessage || err?.message || "Signature rejected");
+                setIsSigning(false);
+                return;
+            } finally {
+                setIsSigning(false);
+            }
+        }
+
         sendTransaction({
             to: quote.transaction.to,
-            data: quote.transaction.data,
+            data: txData,
             value: BigInt(quote.transaction.value),
         });
     };
 
-    const handleBatchSwap = () => {
+    const handleBatchSwap = async () => {
         if (!quote?.transaction) return;
+        setSignError(null);
+        setSwapSellInfo({ amount: sanitizedAmount, token: sellToken });
+
+        let txData = quote.transaction.data as `0x${string}`;
+
+        // For ERC-20 sells (USDC), sign the Permit2 EIP-712 message and append signature
+        if (sellToken === "USDC" && quote.permit2?.eip712) {
+            try {
+                setIsSigning(true);
+                const signature = await signTypedDataAsync(quote.permit2.eip712);
+
+                const signatureLengthInHex = numberToHex(size(signature), { signed: false, size: 32 });
+                txData = concat([txData, signatureLengthInHex, signature]);
+            } catch (err: any) {
+                console.error("Permit2 signing failed:", err);
+                setSignError(err?.shortMessage || err?.message || "Signature rejected");
+                setIsSigning(false);
+                return;
+            } finally {
+                setIsSigning(false);
+            }
+        }
 
         const calls = [];
         const needsApprove =
@@ -231,10 +317,10 @@ export default function SwapModal({
             });
         }
 
-        // Add the swap call
+        // Add the swap call with signed data
         calls.push({
             to: quote.transaction.to as `0x${string}`,
-            data: quote.transaction.data as `0x${string}`,
+            data: txData,
             value: BigInt(quote.transaction.value)
         });
 
@@ -279,8 +365,9 @@ export default function SwapModal({
         ? parseFloat(formatUnits(currentBalanceValue, currentDecimals)).toFixed(sellToken === "USDC" ? 2 : 6)
         : isConnected ? "0.00" : "\u2014";
 
-    const isWorking = isApprovePending || isApproveConfirming || isSwapPending || isBatchPending;
+    const isWorking = isApprovePending || isApproveConfirming || isSwapPending || isBatchPending || isSigning || isConfirmingOnChain;
     const finalError = swapError || batchError;
+    const showResultPanel = isSwapSubmitted || isBatchSuccess || swapTxFailed;
 
     return (
         <div className="modal-overlay" onClick={onClose}>
@@ -386,7 +473,7 @@ export default function SwapModal({
                             disabled={!quote || loadingQuote || isWorking || !!quoteError}
                             onClick={handleSwap}
                         >
-                            {isSwapPending ? "Swapping..." : "Confirm Swap"}
+                            {isSigning ? "Signing Permit..." : isSwapPending ? "Swapping..." : "Confirm Swap"}
                         </button>
                     )}
 
@@ -396,30 +483,107 @@ export default function SwapModal({
                             disabled={!quote || loadingQuote || isWorking || !!quoteError}
                             onClick={handleBatchSwap}
                         >
-                            {isBatchPending ? "Confirming Batch..." : "Swap (1-Click) ⚡"}
+                            {isSigning ? "Signing Permit..." : isBatchPending ? "Confirming Batch..." : "Swap (1-Click) ⚡"}
                         </button>
                     )}
 
                     {/* Status messages */}
-                    {isApproveSuccess && !isBatchSuccess && (
+                    {isApproveSuccess && !isBatchSuccess && !showResultPanel && (
                         <div className="swap-msg success">USDC Approved! Now Swap.</div>
                     )}
-                    {isSwapSuccess && (
-                        <div className="swap-msg success">Transaction Sent! &#128640;</div>
+
+                    {/* ── Swap Result Panel ── */}
+                    {showResultPanel && (
+                        <div className="result-panel">
+                            {/* Confirming on-chain */}
+                            {isConfirmingOnChain && !swapConfirmedOnChain && !swapTxFailed && (
+                                <div className="result-confirming">
+                                    <div className="confirming-spinner" />
+                                    <div className="result-title">Confirming on Base...</div>
+                                    <div className="result-sub">Waiting for on-chain confirmation</div>
+                                    {displayTxHash && (
+                                        <a
+                                            href={`https://basescan.org/tx/${displayTxHash}`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="basescan-link"
+                                        >
+                                            View on BaseScan ↗
+                                        </a>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Confirmed */}
+                            {swapConfirmedOnChain && (
+                                <div className="result-success">
+                                    <div className="result-icon">✅</div>
+                                    <div className="result-title">Swap Successful!</div>
+                                    {swapSellInfo && (
+                                        <div className="result-detail">
+                                            {swapSellInfo.amount} {swapSellInfo.token} → {tokenSymbol}
+                                        </div>
+                                    )}
+                                    {displayTxHash && (
+                                        <a
+                                            href={`https://basescan.org/tx/${displayTxHash}`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="basescan-link success"
+                                        >
+                                            View on BaseScan ↗
+                                        </a>
+                                    )}
+                                    <div className="result-balance-update">
+                                        Balance: {isBalanceLoading ? "Updating..." : displayBalance} {sellToken}
+                                    </div>
+                                    <button className="done-btn" onClick={onClose}>Done</button>
+                                </div>
+                            )}
+
+                            {/* Failed */}
+                            {swapTxFailed && (
+                                <div className="result-failed">
+                                    <div className="result-icon">❌</div>
+                                    <div className="result-title">Swap Failed</div>
+                                    <div className="result-sub">
+                                        {swapReceiptError?.message?.slice(0, 80) || "Transaction reverted on-chain"}
+                                    </div>
+                                    {displayTxHash && (
+                                        <a
+                                            href={`https://basescan.org/tx/${displayTxHash}`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="basescan-link fail"
+                                        >
+                                            View on BaseScan ↗
+                                        </a>
+                                    )}
+                                    <button className="done-btn" onClick={() => { resetSwap(); setSwapSellInfo(null); }}>Try Again</button>
+                                </div>
+                            )}
+
+                            {/* Submitted but not yet confirming (just sent) */}
+                            {isSwapSubmitted && !isConfirmingOnChain && !swapConfirmedOnChain && !swapTxFailed && (
+                                <div className="result-confirming">
+                                    <div className="confirming-spinner" />
+                                    <div className="result-title">Transaction Submitted</div>
+                                    <div className="result-sub">Waiting for confirmation...</div>
+                                </div>
+                            )}
+                        </div>
                     )}
-                    {isBatchSuccess && (
-                        <div className="swap-msg success">Batch Transaction Sent! &#128640;</div>
+
+                    {signError && (
+                        <div className="swap-msg error">
+                            Signing Error: {signError.slice(0, 60)}
+                        </div>
                     )}
-                    {finalError && (
+                    {finalError && !showResultPanel && (
                         <div className="swap-msg error">
                             Error: {finalError.message.slice(0, 50)}&hellip;
                         </div>
                     )}
-
-                    {/* Debug */}
-                    {/* <div className="debug-network">
-                        State: {btnState} | Cap: {supportsBatch ? 'Yes' : 'No'}
-                    </div> */}
                 </div>
             </div>
 
@@ -645,6 +809,112 @@ export default function SwapModal({
                 }
                 .swap-msg.warning {
                     color: #facc15;
+                }
+                /* ── Result Panel ── */
+                .result-panel {
+                    margin-top: 16px;
+                    border-radius: 12px;
+                    overflow: hidden;
+                    animation: fadeIn 0.2s ease;
+                }
+                .result-confirming,
+                .result-success,
+                .result-failed {
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    gap: 8px;
+                    padding: 20px 16px;
+                    border-radius: 12px;
+                    text-align: center;
+                }
+                .result-confirming {
+                    background: rgba(0, 212, 255, 0.08);
+                    border: 1px solid rgba(0, 212, 255, 0.2);
+                }
+                .result-success {
+                    background: rgba(0, 255, 170, 0.08);
+                    border: 1px solid rgba(0, 255, 170, 0.25);
+                }
+                .result-failed {
+                    background: rgba(248, 113, 113, 0.08);
+                    border: 1px solid rgba(248, 113, 113, 0.25);
+                }
+                .result-icon {
+                    font-size: 32px;
+                    margin-bottom: 4px;
+                }
+                .result-title {
+                    font-size: 16px;
+                    font-weight: 700;
+                    color: #fff;
+                }
+                .result-detail {
+                    font-size: 14px;
+                    color: #00ffaa;
+                    font-weight: 600;
+                    font-family: monospace;
+                }
+                .result-sub {
+                    font-size: 12px;
+                    color: #888;
+                }
+                .result-balance-update {
+                    font-size: 12px;
+                    color: #aaa;
+                    margin-top: 4px;
+                    padding: 6px 12px;
+                    background: rgba(255, 255, 255, 0.04);
+                    border-radius: 8px;
+                }
+                .basescan-link {
+                    display: inline-block;
+                    font-size: 12px;
+                    color: #00d4ff;
+                    text-decoration: none;
+                    padding: 4px 12px;
+                    border-radius: 6px;
+                    background: rgba(0, 212, 255, 0.08);
+                    transition: all 0.2s;
+                    margin-top: 4px;
+                }
+                .basescan-link:hover {
+                    background: rgba(0, 212, 255, 0.15);
+                }
+                .basescan-link.success {
+                    color: #00ffaa;
+                    background: rgba(0, 255, 170, 0.08);
+                }
+                .basescan-link.fail {
+                    color: #f87171;
+                    background: rgba(248, 113, 113, 0.08);
+                }
+                .confirming-spinner {
+                    width: 28px;
+                    height: 28px;
+                    border: 3px solid rgba(0, 212, 255, 0.2);
+                    border-top-color: #00d4ff;
+                    border-radius: 50%;
+                    animation: spin 0.8s linear infinite;
+                }
+                @keyframes spin {
+                    to { transform: rotate(360deg); }
+                }
+                .done-btn {
+                    width: 100%;
+                    margin-top: 8px;
+                    padding: 12px;
+                    border-radius: 10px;
+                    background: linear-gradient(135deg, #00ffaa, #00d4ff);
+                    border: none;
+                    color: #000;
+                    font-weight: 700;
+                    font-size: 14px;
+                    cursor: pointer;
+                    transition: transform 0.1s;
+                }
+                .done-btn:active {
+                    transform: scale(0.98);
                 }
                 .connect-section {
                     margin-top: 12px;
