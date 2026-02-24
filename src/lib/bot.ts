@@ -142,8 +142,8 @@ interface SignalSummary {
     change: number;
 }
 
-async function sendSignalNotifications(newSignals: SignalSummary[]) {
-    if (newSignals.length === 0) return;
+async function sendSignalNotifications(signals: SignalSummary[]) {
+    if (signals.length === 0) return;
 
     try {
         // Fetch all subscribers
@@ -156,13 +156,16 @@ async function sendSignalNotifications(newSignals: SignalSummary[]) {
             return;
         }
 
-        // Build notification content
-        const topSignal = newSignals[0];
-        const title = `🚀 ${topSignal.name} +${topSignal.change.toFixed(0)}%`;
-        const body = newSignals.length > 1
-            ? `and ${newSignals.length - 1} more signal${newSignals.length > 2 ? "s" : ""} detected on Base`
-            : `New top gainer detected on Base`;
-        const notificationId = `signal-${Date.now()}`;
+        // Build notification content (Farcaster limits: title 32 chars, body 128 chars)
+        const topSignal = signals[0];
+        const symbolOnly = topSignal.name.length > 18 ? topSignal.name.slice(0, 18) : topSignal.name;
+        const rawTitle = `${symbolOnly} +${topSignal.change.toFixed(0)}%`;
+        const title = rawTitle.slice(0, 32);
+        const rawBody = signals.length > 1
+            ? `+${signals.length - 1} more signal${signals.length > 2 ? "s" : ""} on Base | LiquiTrace`
+            : `Top gainer detected on Base | LiquiTrace`;
+        const body = rawBody.slice(0, 128);
+        const notificationId = `lt-${new Date().toISOString().slice(0, 13)}`;  // dedup per hour
 
         // Group tokens by notification_url
         const urlGroups = new Map<string, string[]>();
@@ -271,7 +274,6 @@ export async function runBotScan() {
 
     // 4. Process
     const results: SignalSummary[] = [];
-    const newSignals: SignalSummary[] = [];
 
     for (const { pair, change, vol, liq } of candidates) {
         const base = pair.baseToken;
@@ -311,30 +313,16 @@ export async function runBotScan() {
             updated_at: new Date().toISOString(),
         };
 
-        const { error, data } = await supabase
-            .from("signals")
-            .upsert(signal, { onConflict: "token_address" })
-            .select("id");
+        const { error } = await supabase.from("signals").upsert(signal, { onConflict: "token_address" });
+        if (error) console.error("Upsert Error:", error);
 
-        if (error) {
-            console.error("Upsert Error:", error);
-        }
-
-        const signalInfo = { name: `${name} (${symbol})`, change };
-        results.push(signalInfo);
-
-        // Track new signals (upsert returned data means it was inserted/updated)
-        if (data && data.length > 0) {
-            newSignals.push(signalInfo);
-        }
+        results.push({ name: `${name} (${symbol})`, change });
     }
 
-    // 5. Send notifications for new signals
-    if (newSignals.length > 0) {
-        await sendSignalNotifications(newSignals);
-    }
+    // 5. Send notifications for top signals found this cycle
+    await sendSignalNotifications(results);
 
     await cleanupOldSignals();
-    return { success: true, processed: results.length, top: results, notified: newSignals.length };
+    return { success: true, processed: results.length, top: results };
 }
 
