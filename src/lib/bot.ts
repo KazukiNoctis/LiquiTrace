@@ -140,6 +140,7 @@ const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://liquitrace.vercel.ap
 interface SignalSummary {
     name: string;
     change: number;
+    tokenAddress: string;
 }
 
 async function sendSignalNotifications(signals: SignalSummary[]) {
@@ -165,7 +166,8 @@ async function sendSignalNotifications(signals: SignalSummary[]) {
             ? `+${signals.length - 1} more signal${signals.length > 2 ? "s" : ""} on Base | LiquiTrace`
             : `Top gainer detected on Base | LiquiTrace`;
         const body = rawBody.slice(0, 128);
-        const notificationId = `lt-${new Date().toISOString().slice(0, 13)}`;  // dedup per hour
+        const tokenShort = topSignal.tokenAddress.slice(-8);
+        const notificationId = `lt-${tokenShort}-${new Date().toISOString().slice(0, 13)}`;  // dedup per token per hour
 
         // Group tokens by notification_url
         const urlGroups = new Map<string, string[]>();
@@ -316,7 +318,7 @@ export async function runBotScan() {
         const { error } = await supabase.from("signals").upsert(signal, { onConflict: "token_address" });
         if (error) console.error("Upsert Error:", error);
 
-        results.push({ name: `${name} (${symbol})`, change });
+        results.push({ name: `${name} (${symbol})`, change, tokenAddress: base.address });
     }
 
     // 5. Send notifications for top signals found this cycle

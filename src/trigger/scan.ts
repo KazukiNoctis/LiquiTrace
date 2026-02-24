@@ -146,7 +146,7 @@ export const scanTarget = schedules.task({
         // --- Notification Sender ---
         const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://liquitrace.vercel.app";
 
-        async function sendNotifications(signals: { name: string; change: number }[]) {
+        async function sendNotifications(signals: { name: string; change: number; tokenAddress: string }[]) {
             if (signals.length === 0) return;
             try {
                 const { data: subs, error: subErr } = await supabase
@@ -161,7 +161,8 @@ export const scanTarget = schedules.task({
                 const body = (signals.length > 1
                     ? `+${signals.length - 1} more signal${signals.length > 2 ? "s" : ""} on Base | LiquiTrace`
                     : `Top gainer detected on Base | LiquiTrace`).slice(0, 128);
-                const notificationId = `lt-${new Date().toISOString().slice(0, 13)}`;
+                const tokenShort = topSig.tokenAddress.slice(-8);
+                const notificationId = `lt-${tokenShort}-${new Date().toISOString().slice(0, 13)}`;  // dedup per token per hour
 
                 const groups = new Map<string, string[]>();
                 for (const s of subs) {
@@ -235,7 +236,7 @@ export const scanTarget = schedules.task({
             .slice(0, TOP_N);
 
         // 4. Process
-        const results: { name: string; change: number }[] = [];
+        const results: { name: string; change: number; tokenAddress: string }[] = [];
         if (candidates.length > 0) {
             for (const { pair, change, vol, liq } of candidates) {
                 const base = pair.baseToken;
@@ -278,7 +279,7 @@ export const scanTarget = schedules.task({
                 const { error } = await supabase.from("signals").upsert(signal, { onConflict: "token_address" });
                 if (error) console.error("Upsert Error:", error);
 
-                results.push({ name: `${name} (${symbol})`, change });
+                results.push({ name: `${name} (${symbol})`, change, tokenAddress: base.address });
             }
         }
 
